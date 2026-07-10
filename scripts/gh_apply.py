@@ -3,7 +3,8 @@
 """执行分类计划：删 List / 建 List / 归类 repo。全部走 GitHub 表单端点。
 
 用法:
-  python3 gh_apply.py --profile <目录> --user <登录名> --plan plan.json [--result result.json]
+  python3 gh_apply.py --profile <目录> --user <登录名> --plan plan.json \
+    [--result result.json] --confirm APPLY [--confirm-delete DELETE-LISTS]
 
 plan.json 结构（各段都可选，按 删→建→归类 顺序执行）:
   {
@@ -29,9 +30,18 @@ def main():
     ap.add_argument("--user", required=True)
     ap.add_argument("--plan", required=True)
     ap.add_argument("--result", default=None)
+    ap.add_argument("--confirm", default=None,
+                    help="写操作确认口令；必须精确为 APPLY")
+    ap.add_argument("--confirm-delete", default=None,
+                    help="删除 List 二次确认口令；必须精确为 DELETE-LISTS")
     args = ap.parse_args()
     U = args.user
     plan = json.load(open(args.plan))
+    if args.confirm != "APPLY":
+        ap.error("拒绝执行：未提供 --confirm APPLY")
+    if plan.get("delete_lists") and args.confirm_delete != "DELETE-LISTS":
+        ap.error("拒绝删除 List：计划包含 delete_lists，但未提供 "
+                 "--confirm-delete DELETE-LISTS")
     STARS = f"https://github.com/{U}?tab=stars"
 
     def load_stars(page):

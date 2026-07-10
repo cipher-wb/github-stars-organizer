@@ -1,100 +1,139 @@
 ---
 name: github-stars-organizer
-description: 交互式整理 GitHub Stars 收藏到 List 分类库。当用户想整理/重新分类自己的 GitHub star、给 star 归类到 List、清理杂乱的收藏夹、或把没放进任何 List 的仓库归类时使用。全程"先问后做"：抓取现状并诊断→询问「全部重新分类」还是「只补未归类」→对未归类仓库逐条建议→必须经用户明确同意，才用浏览器自动化在 GitHub 建 List/删 List/归类。触发词：整理github star、star分类、收藏太乱、给star归类、重新分类stars、star分类库、star归档。需要本地能弹出浏览器让用户登录 GitHub。
+description: 整理用户自己的 GitHub Stars 和 Lists。当用户要求整理、清理、重新分类或归档 GitHub star，把未分类的收藏加入 List，或诊断 GitHub Lists 分类体系时使用。通过 Playwright 复用本地 GitHub 登录态，先生成快照和方案，再在用户明确批准后创建、删除 List 或修改归类。不用于整理他人账号、未获授权的 GitHub 数据，或未经确认直接执行写操作。
 ---
 
 # GitHub Stars Organizer
 
-用浏览器自动化整理 GitHub 星标收藏。GitHub 的 Lists 没有公开写 API，本 skill 通过驱动
-网页表单端点完成建 List / 删 List / 归类，全部操作**必须先经用户同意**。
+通过 Playwright 整理 GitHub 星标收藏。GitHub Lists 没有公开写 API；本 Skill 使用 GitHub 网页表单端点创建、删除 List 和更新归类。
 
-## ⛔ 交互铁律（最高优先级，不可违背）
+## 强制安全规则
 
-1. **未经用户明确同意，绝不运行 `gh_apply.py`**（它会真实改动用户的 GitHub）。
-2. **删除现有 List 是破坏性操作**（虽不影响 star 本身），必须单独、显式二次确认。
-3. **未归类的仓库，必须让用户决定归属**——可批量建议，但不确认不落库，绝不自作主张。
-4. 每一步动手前用一句话说清"接下来要做什么、影响什么"。
+1. 未获用户明确的“执行”指令前，禁止运行 `gh_apply.py`。
+2. 删除 List 是破坏性操作。即使不会取消 star，也必须对删除清单获得第二次明确确认。
+3. 用户未确认的仓库禁止写入 `plan.json`。可以批量建议，不得代替用户决定归属。
+4. 每次写操作前，先简短说明即将改动的 List 和仓库数量。
+5. 不得输出、上传、提交或复制 `gh_profile/` 内的 cookie 和登录数据。
+
+## 运行约定
+
+- 从 Skill 元数据中已知的 `SKILL.md` 路径解析 Skill 根目录，记为 `SKILL_ROOT`。运行脚本时始终使用绝对路径：`python3 "$SKILL_ROOT/scripts/<script>.py"`。
+- 使用 `mktemp -d "${TMPDIR:-/tmp}/github-stars-organizer.XXXXXX"` 创建独立工作目录，不要将登录态和计划写入 Skill 目录或用户仓库。
+- 结构化用户输入工具可用时可用它呈现模式选项；不可用时直接提出一个简短、明确的文本问题。不得依赖 Claude Code 专属的 `AskUserQuestion`。
+- 登录需要 macOS 本地图形环境弹出 Chromium，由用户手动完成密码和 2FA。
 
 ## 前置检查
 
-- 需要**本地能弹出浏览器**的环境（登录 GitHub 要用户手动过账号密码/2FA）。
-- 确认 Playwright 就绪：`python3 -c "from playwright.sync_api import sync_playwright"`；
-  缺则 `pip install playwright && python3 -m playwright install chromium`。
-- 拿到用户的 GitHub 用户名（`<login>`）；不知道就先问。
+1. 获取用户自己的 GitHub 用户名。当本机 `gh auth status` 可读取当前账号时，可先将该账号作为候选并让用户确认；无法确定时再询问，禁止猜测。
+2. 检查 Playwright：
 
-## 工作目录
+   ```bash
+   python3 -c "from playwright.sync_api import sync_playwright"
+   ```
 
-在临时目录（scratchpad）下建工作区，存放：`gh_profile/`（浏览器登录态）、
-`snapshot.json`、`plan.json`、`result.json`。脚本在本 skill 的 `scripts/` 下。
+3. 缺失时告知用户将安装本 Skill 的运行依赖，然后执行：
+
+   ```bash
+   python3 -m pip install -r "$SKILL_ROOT/requirements.txt"
+   python3 -m playwright install chromium
+   ```
 
 ## 工作流
 
-### 步骤 1 · 登录
-后台运行，弹出浏览器让用户登录：
+### 1. 登录
+
+运行有头 Chromium，等待用户手动登录：
+
+```bash
+python3 "$SKILL_ROOT/scripts/gh_login.py" \
+  --profile "$WORKDIR/gh_profile" \
+  --user "$GITHUB_LOGIN"
 ```
-python3 scripts/gh_login.py --profile <workdir>/gh_profile --user <login>
+
+等待 `LOGIN_OK user=<login>`。提醒用户在弹出窗口内登录，不要关闭窗口。如检测到的账号与期望用户名不同，停止并让用户决定是否继续。
+
+### 2. 生成快照
+
+```bash
+python3 "$SKILL_ROOT/scripts/gh_snapshot.py" \
+  --profile "$WORKDIR/gh_profile" \
+  --user "$GITHUB_LOGIN" \
+  --out "$WORKDIR/snapshot.json"
 ```
-等待输出 `LOGIN_OK user=<login>`。提醒用户：在弹出的窗口里登录、别关窗口、别用日常浏览器。
 
-### 步骤 2 · 抓现状
+读取 `snapshot.json`：
+
+- `lists`：现有 List 及成员。
+- `all_repos`：全部 star，包含描述、语言、topics 和 star 数。
+- `uncategorized`：尚未进入任何 List 的仓库。
+
+### 3. 诊断并选择模式
+
+先汇报 star 总数、List 数、未分类数，以及重复、命名不一致、错别字或低价值“垃圾桶”分类。然后必须让用户选择：
+
+- **只补未分类（推荐）**：保留所有现有 List，只处理 `uncategorized`。
+- **全部重新分类**：重建分类体系，包含删除 List 的破坏性操作。
+- **仅微调**：调整或合并少量 List，再补齐未分类项。
+
+### 4. 生成并批准方案
+
+- 只补未分类：依据每个仓库的描述和 topics 建议现有 List，分批呈现，让用户确认或改派。
+- 全部重新分类：按用途场景设计新体系，List 名最多 32 个字符，同时列出待删除 List。获得方案批准后，对删除清单再做一次单独确认。
+- 仅微调：按具体变更分组呈现，明确哪些变更会通过“新建 + 重新归类 + 删除旧 List”实现。
+
+仅将已确认项写入 `$WORKDIR/plan.json`。向用户复述最终计划和影响数量，然后暂停，直到用户明确说“执行”或同等含义的指令。
+
+### 5. 执行并核对
+
+只有在获得最终执行批准后才能运行：
+
+```bash
+python3 "$SKILL_ROOT/scripts/gh_apply.py" \
+  --profile "$WORKDIR/gh_profile" \
+  --user "$GITHUB_LOGIN" \
+  --plan "$WORKDIR/plan.json" \
+  --result "$WORKDIR/result.json" \
+  --confirm APPLY
 ```
-python3 scripts/gh_snapshot.py --profile <workdir>/gh_profile --user <login> --out <workdir>/snapshot.json
+
+如计划含删除，必须在用户完成第二次确认后追加：
+
+```bash
+--confirm-delete DELETE-LISTS
 ```
-读 `snapshot.json`：`lists`（现有分类+成员）、`all_repos`（全量 star，带 desc/lang/topics）、
-`uncategorized`（没进任何 List 的仓库，带完整信息供归类判断）。
 
-### 步骤 3 · 诊断 + 询问模式（必做）
-先向用户汇报现状：多少 star、多少 List、多少未归类、现有分类有无明显问题
-（重复/垃圾桶类/命名不一/错别字）。
-然后**用 AskUserQuestion 询问模式**（这是用户强诉求，必问）：
-- **只补未归类**（推荐，非破坏性）：保留现有 List，只把 `uncategorized` 归进去。
-- **全部重新分类**（破坏性）：推倒现有 List，按新体系重建。
-- **仅微调**：改名/合并个别 List + 补未归类。
+`gh_apply.py` 按“删除 → 创建 → 归类”执行。读取 `result.json`，汇报成功数、失败数和失败清单，并让用户在 GitHub stars 页面刷新验收。不得在 `failed` 非空时宣称全部成功。
 
-### 步骤 4 · 生成方案 + 逐项确认（必做，禁止跳过）
-- **只补未归类**：为每个 `uncategorized` 仓库按其 desc/topics 建议归入某个现有 List，
-  用表格/分批 AskUserQuestion 呈现，让用户**逐条确认或改派**。用户没确认的仓库不写进 plan。
-- **全部重新分类**：参考现有命名习惯 + star 内容，设计新分类体系（按用途场景，List 名 ≤32 字），
-  连同"删除哪些旧 List"一起呈现，**逐类或整体获得用户批准**后才定案。删除需二次确认。
-- 定案后写 `plan.json`（格式见下）。**把最终 plan 复述给用户，得到"执行"指令再进下一步**。
+### 6. 安全收尾
 
-### 步骤 5 · 执行 + 核对
-```
-python3 scripts/gh_apply.py --profile <workdir>/gh_profile --user <login> --plan <workdir>/plan.json --result <workdir>/result.json
-```
-按 删→建→归类 顺序执行，末尾打印各 List 数量核对。读 `result.json` 汇报战果
-（成功/失败数、失败清单）。建议用户去 stars 页刷新验收。
+说明 `$WORKDIR/gh_profile` 含 GitHub cookie。用户验收后，先询问是否删除工作目录；获得同意后再删除。不要在未确认时清理，否则用户无法复查计划和结果。
 
-### 步骤 6 · 安全收尾
-提醒：`gh_profile/` 目录含用户的 GitHub 登录 cookie。用户验收无误后，
-**主动提出删除该目录**以保护账号，经同意后 `rm -rf <workdir>/gh_profile`。
+## `plan.json` 格式
 
-## plan.json 格式
-
-各段都可选，按 删→建→归类 执行。归类为覆盖式（传该 repo 应归属的全部 List）。
 ```json
 {
-  "delete_lists": ["旧slug1", "旧slug2"],
-  "create_lists": [{"name": "AI网文·小说创作", "desc": "写小说的工具与模型"}],
+  "delete_lists": ["old-slug-1", "old-slug-2"],
+  "create_lists": [
+    {"name": "AI 写作", "desc": "写作工具与模型"}
+  ],
   "assignments": [
-    {"repo": "owner/name", "list": "AI网文·小说创作"},
-    {"repo": "owner/other", "lists": ["分类A", "分类B"]}
+    {"repo": "owner/name", "list": "AI 写作"},
+    {"repo": "owner/other", "lists": ["分类 A", "分类 B"]}
   ]
 }
 ```
-- `delete_lists` 传 slug 列表，或字符串 `"ALL"` 删除所有现有 List（仅"全部重新分类"用，需二次确认）。
-- `assignments` 的 `list`/`lists` 用 List 显示名；`gh_apply.py` 会自动映射到 List id。
-  只补未归类时，只需列出 `uncategorized` 里用户确认过的仓库。
 
-## 分类建议原则
+- 各段均可选。
+- `delete_lists` 使用 slug 列表；字符串 `"ALL"` 仅能在用户明确批准全量删除时使用。
+- `assignments` 中的 `list` 或 `lists` 使用 List 显示名。归类是覆盖式的：传入的列表必须包含该仓库最终应保留的所有 List。
 
-- **按用途场景**分（贴合用户实际怎么用），而非单纯按语言/star 数。
-- List 名简洁、`≤32 字`，沿用用户已有的命名习惯。
-- 把大量低价值同类项（如几十星的练手 demo）打包成单独一类，保持主分类清爽。
-- 数量核对：归类后各 List 成员总数应覆盖预期仓库，`fail=0` 才算干净。
+## 分类原则
 
-## 出问题时
+- 按用途场景分类，不要只按语言或 star 数分类。
+- 沿用用户已有命名习惯，List 名不超过 32 个字符。
+- 将大量低价值同类项收纳到独立分类，保持主分类清晰。
+- 执行后核对每个 List 数量和 `failed` 列表，不以脚本退出码代替业务验收。
 
-脚本报错（406 / 422 / selector 超时 / 分页抓不全）时，读
-`references/github-lists-internals.md` —— 内含全部端点、令牌机制、DOM selector 与
-错误码对照，据此定位并修补脚本。GitHub 改版导致 selector 失效时也查它。
+## 故障排查
+
+遇到 406、422、selector 超时、分页不全或 GitHub 页面改版时，读取 `references/github-lists-internals.md`。仅在出现这些问题时加载该参考文件。

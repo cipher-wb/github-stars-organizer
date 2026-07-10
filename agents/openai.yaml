@@ -1,0 +1,7 @@
+interface:
+  display_name: "GitHub Stars Organizer"
+  short_description: "安全诊断并整理 GitHub Stars Lists"
+  default_prompt: "使用 $github-stars-organizer 读取我的 GitHub Stars 现状，先给出分类建议，未经我确认不要执行任何写操作。"
+
+policy:
+  allow_implicit_invocation: true

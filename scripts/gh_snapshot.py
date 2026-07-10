@@ -10,7 +10,7 @@
     "user": "...",
     "lists":   [{"name","id","slug","count","members":["owner/repo",...]}],
     "all_repos":[{"full_name":"owner/repo","repo_id":"123"}],
-    "uncategorized": ["owner/repo", ...]
+    "uncategorized": [{"full_name":"owner/repo", "desc":"...", ...}, ...]
   }
 需先用 gh_login.py 在同一 --profile 目录登录。
 """

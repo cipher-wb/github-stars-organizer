@@ -22,6 +22,18 @@ def logged_in(ctx):
     return False
 
 
+def current_login(page):
+    """读取当前 GitHub 登录名；页面或 DOM 变化时返回 None。"""
+    try:
+        page.goto("https://github.com/settings/profile", timeout=30000,
+                  wait_until="domcontentloaded")
+        return page.locator(
+            'meta[name="octolytics-actor-login"]'
+        ).get_attribute("content")
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", required=True, help="浏览器持久化目录（保存登录态）")
@@ -37,7 +49,10 @@ def main():
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         if logged_in(ctx):
-            print("LOGIN_OK_ALREADY", flush=True)
+            who = current_login(page)
+            print(f"LOGIN_OK_ALREADY user={who}", flush=True)
+            if args.user and who and who != args.user:
+                print(f"WARN 登录者 {who} 与期望 {args.user} 不一致", flush=True)
             ctx.close(); return 0
         try:
             page.goto("https://github.com/login", timeout=60000)
@@ -47,12 +62,7 @@ def main():
         deadline = time.time() + args.timeout
         while time.time() < deadline:
             if logged_in(ctx):
-                who = None
-                try:
-                    page.goto("https://github.com/settings/profile", timeout=30000)
-                    who = page.locator('meta[name="octolytics-actor-login"]').get_attribute("content")
-                except Exception:
-                    pass
+                who = current_login(page)
                 print(f"LOGIN_OK user={who}", flush=True)
                 if args.user and who and who != args.user:
                     print(f"WARN 登录者 {who} 与期望 {args.user} 不一致", flush=True)
